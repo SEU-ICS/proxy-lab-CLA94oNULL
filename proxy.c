@@ -44,7 +44,7 @@ void URL_copy(URL* a, URL* b)
 
 /////////////////   cache   ///////////////////
 
-#define MAX_OBJECT_CNT 20
+#define MAX_OBJECT_CNT 100
 typedef struct
 {
     int empty;
@@ -71,31 +71,17 @@ void cache_init()
 
 CACHE* cache_find(URL* url)
 {
-    CACHE* target = NULL;
     for (int i = 0; i < MAX_OBJECT_CNT; i++)
     {
         P(&cache[i].mutex);
-        ++cache[i].read_cnt;
-        if (cache[i].read_cnt == 1) P(&cache[i].w);
-        V(&cache[i].mutex);
-        
-        if (!cache[i].empty)
-        if (URL_is_equal(url, &cache[i]))
-        target = &cache[i];
-        
-        P(&cache[i].mutex);
-        --cache[i].read_cnt;
-        if (cache[i].read_cnt == 0) V(&cache[i].w);
-        V(&cache[i].mutex);
-        
-        // 返回找到的cache，同时更新时间
-        if (target)
+        if (!cache[i].empty && URL_is_equal(url, &cache[i].url))
         {
-            P(&target->mutex);
-            target->last_visit_time = ++current_time;
-            V(&target->mutex);
-            return target;
+            // 找到条目
+            cache[i].last_visit_time = time(NULL); // 更新访问时间
+            V(&cache[i].mutex);
+            return &cache[i];
         }
+        V(&cache[i].mutex);
     }
     return NULL;
 }
@@ -113,7 +99,7 @@ CACHE* cache_fill(CACHE* target, URL* url, char *data)
     V(&target->mutex);
 }
 
-void cache_load(URL* url, char* data)
+void cache_save(URL* url, char* data)
 {
     CACHE* target = NULL;
     // 判断是否有空位放入缓存
@@ -275,7 +261,7 @@ void doit(int connfd) {
     rio_readinitb(&rio, serverfd);
     Rio_writen(serverfd, data, strlen(data));
     
-    int len, total_len;
+    int len, total_len = 0;
     char cache_data[MAX_OBJECT_SIZE];
     char* cache_data_ptr = cache_data;
     while ((len = Rio_readlineb(&rio, line, MAX_SIZE)) > 0)
@@ -290,7 +276,7 @@ void doit(int connfd) {
     }
     if (total_len < MAX_OBJECT_SIZE)
     {
-        cache_load(&url, cache_data);
+        cache_save(&url, cache_data);
     }
     
     
