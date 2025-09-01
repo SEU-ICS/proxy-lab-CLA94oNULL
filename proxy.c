@@ -150,14 +150,8 @@ void cache_save(URL* url, char* data)
         
         if (!cache[i].empty)
         {
-            if (target == NULL)
-            {
-                target = &cache[i];
-            }
-            else if (cache[i].last_visit_time < target->last_visit_time)
-            {
-                target = &cache[i];
-            }
+            if (target == NULL) target = &cache[i];
+            else if (cache[i].last_visit_time < target->last_visit_time) target = &cache[i];
         }
         
         cache_read_end(&cache[i]);
@@ -231,10 +225,11 @@ void read_client(rio_t *rio, URL *url, char *data)
                   method, url->path, host, user_agent_hdr, other);
 }
 
-void doit(int connfd) {
+void doit(int connect_fd)
+{
     rio_t rio;
-    char line[MAX_SIZE];
-    Rio_readinitb(&rio, connfd);
+    char text[MAX_SIZE];
+    Rio_readinitb(&rio, connect_fd);
     
     URL url;
     char data[MAX_SIZE];
@@ -247,29 +242,29 @@ void doit(int connfd) {
         if (!cache[i].empty)
         if (URL_is_equal(url, &cache[i].url))
         {
-            Rio_writen(connfd, cache[i]->data, strlen(cache[i]->data));
+            Rio_writen(connect_fd, cache[i]->data, strlen(cache[i]->data));
             cache_read_end(&cache[i]);
             return;
         }
         cache_read_end(&cache[i]);
     }
  
-    int serverfd = open_clientfd(url.host, url.port);
-    if (serverfd < 0) printf("Connection failed!\n");
+    int server_fd = open_clientfd(url.host, url.port);
+    if (server_fd < 0) printf("Connection failed!\n");
     
-    rio_readinitb(&rio, serverfd);
-    Rio_writen(serverfd, data, strlen(data));
+    rio_readinitb(&rio, server_fd);
+    Rio_writen(server_fd, data, strlen(data));
     
     int len, total_len = 0;
     char cache_data[MAX_OBJECT_SIZE];
     char* cache_data_ptr = cache_data;
-    while ((len = Rio_readlineb(&rio, line, MAX_SIZE)) > 0)
+    while ((len = Rio_readlineb(&rio, text, MAX_SIZE)) > 0)
     {
-        Rio_writen(connfd, line, len);
+        Rio_writen(connect_fd, text, len);
         total_len += len;
         if (total_len < MAX_OBJECT_SIZE)
         {
-            strcpy(cache_data_ptr, line);
+            strcpy(cache_data_ptr, text);
             cache_data_ptr += len;
         }
     }
