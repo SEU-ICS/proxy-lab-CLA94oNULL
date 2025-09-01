@@ -69,34 +69,60 @@ void cache_init()
     }
 }
 
+void cache_read_begin(CACHE* c)
+{
+    P(&c->mutex);
+    c->read_cnt++;
+    if (c->read_cnt == 1) P(&c->w);
+    V(&c->mutex);
+}
+void cache_read_end(CACHE* c)
+{
+    P(&c->mutex);
+    c->read_cnt--;
+    if (c->read_cnt == 0) V(&c->w);
+    V(&c->mutex);
+}
+void cache_write_begin(CACHE* c)
+{
+    P(&c->w);
+}
+void cache_write_end(CACHE* c)
+{
+    V(&c->w);
+}
+
+void cache_update(CACHE* c)
+{
+    cache_write_begin(c);
+    c->last_visit_time = ++current_time;
+    cache_write_end(c);
+}
+
 CACHE* cache_find(URL* url)
 {
-    for (int i = 0; i < MAX_OBJECT_CNT; i++)
+    CACHE* target = NULL;
+    for (int i = 0; i < MAX_OBJECT_CNT && target == NULL; i++)
     {
-        P(&cache[i].mutex);
-        if (!cache[i].empty && URL_is_equal(url, &cache[i].url))
-        {
-            // 找到条目
-            cache[i].last_visit_time = time(NULL); // 更新访问时间
-            V(&cache[i].mutex);
-            return &cache[i];
-        }
-        V(&cache[i].mutex);
+        cache_read_begin(&cache[i]);
+        if (!cache[i].empty)
+        if (URL_is_equal(url, &cache[i].url))
+        target = &cache[i];
+        cache_read_end(&cache[i]);
     }
-    return NULL;
+    if (target != NULL)
+    cache_update(target);
+    return target;
 }
 
 CACHE* cache_fill(CACHE* target, URL* url, char *data)
 {
-    P(&target->w);
+    cache_write_begin(target);
     target->empty = 0;
-    URL_copy(&target->url, url);
     strcpy(target->data, data);
-    V(&target->w);
-    
-    P(&target->mutex);
-    target->last_visit_time = ++current_time;
-    V(&target->mutex);
+    URL_copy(&target->url, url);
+    cache_write_end(target);
+    cache_update(target);
 }
 
 void cache_save(URL* url, char* data)
@@ -105,31 +131,22 @@ void cache_save(URL* url, char* data)
     // 判断是否有空位放入缓存
     for (int i = 0; i < MAX_OBJECT_CNT; i++)
     {
-        P(&cache[i].mutex);
-        ++cache[i].read_cnt;
-        if (cache[i].read_cnt == 1) P(&cache[i].w);
-        V(&cache[i].mutex);
+        cache_read_begin(&cache[i]);
         
-        if (cache[i].empty)
-        target = &cache[i];
+        if (cache[i].empty) target = &cache[i];
         
-        P(&cache[i].mutex);
-        --cache[i].read_cnt;
-        if (cache[i].read_cnt == 0) V(&cache[i].w);
-        V(&cache[i].mutex);
+        cache_read_end(&cache[i]);
         
         if (target != NULL)
         {
             cache_fill(target, url, data);
+            return;
         }
     }
     
     for (int i = 0; i < MAX_OBJECT_CNT; i++)
     {
-        P(&cache[i].mutex);
-        ++cache[i].read_cnt;
-        if (cache[i].read_cnt == 1) P(&cache[i].w);
-        V(&cache[i].mutex);
+        cache_read_begin(&cache[i]);
         
         if (!cache[i].empty)
         {
@@ -143,10 +160,7 @@ void cache_save(URL* url, char* data)
             }
         }
         
-        P(&cache[i].mutex);
-        --cache[i].read_cnt;
-        if (cache[i].read_cnt == 0) V(&cache[i].w);
-        V(&cache[i].mutex);
+        cache_read_end(&cache[i]);
     }
     
     cache_fill(target, url, data);
@@ -227,32 +241,17 @@ void doit(int connfd) {
     read_client(&rio, &url, data);
     
     // 查找cache
-    CACHE* target = NULL;
     for (int i = 0; i < MAX_OBJECT_CNT; i++)
     {
-        P(&cache[i].mutex);
-        ++cache[i].read_cnt;
-        if (cache[i].read_cnt == 1) P(&cache[i].w);
-        V(&cache[i].mutex);
-        
+        cache_read_begin(&cache[i]);
         if (!cache[i].empty)
-        if (URL_is_equal(&url, &cache[i]))
+        if (URL_is_equal(url, &cache[i].url))
         {
-            target = &cache[i];
-            target->last_visit_time = ++current_time; // 更新时间
-            Rio_writen(connfd, target->data, strlen(target->data));
-        }
-        
-        P(&cache[i].mutex);
-        --cache[i].read_cnt;
-        if (cache[i].read_cnt == 0) V(&cache[i].w);
-        V(&cache[i].mutex);
-        
-        
-        if (target)
-        {
+            Rio_writen(connfd, cache[i]->data, strlen(cache[i]->data));
+            cache_read_end(&cache[i]);
             return;
         }
+        cache_read_end(&cache[i]);
     }
  
     int serverfd = open_clientfd(url.host, url.port);
