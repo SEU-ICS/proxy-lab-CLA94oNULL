@@ -3,7 +3,7 @@
 #include "csapp.h"
 
 #define MAX_SIZE 8192
-#define SBUF_SIZE 1000000
+#define SBUF_SIZE 16384
 #define MAX_THREAD 8
 
 /* Recommended max cache and object sizes */
@@ -16,12 +16,158 @@ static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64;
 #define FREE_PORT 43032
 
 
+
 typedef struct
 {
     char host[MAX_SIZE];
     char port[MAX_SIZE];
     char path[MAX_SIZE];
 }URL;
+
+int URL_is_equal(URL* a, URL* b)
+{
+    if (strcmp(a->host,b->host))return 0;
+    if (strcmp(a->port,b->port))return 0;
+    if (strcmp(a->path,b->path))return 0;
+    return 1;
+}
+
+void URL_copy(URL* a, URL* b)
+{
+    strcpy(a->host, b->host);
+    strcpy(a->port, b->port);
+    strcpy(a->path, b->path);
+    return;
+}
+
+
+
+/////////////////   cache   ///////////////////
+
+#define MAX_OBJECT_CNT 20
+typedef struct
+{
+    int empty;
+    int read_cnt;
+    int last_visit_time;
+    sem_t mutex, w;
+    char data[MAX_OBJECT_SIZE];
+    URL url;
+} CACHE;
+CACHE cache[MAX_OBJECT_CNT];
+int current_time = 0;
+int read_cnt;
+sem_t smt_mutex, smt_w;
+
+void cache_init()
+{
+    for (int i = 0; i < MAX_OBJECT_CNT; i++)
+    {
+        cache[i].empty = 1;
+        Sem_init(&cache[i].mutex, 0, 1); // 单线程共享信号量 初值1
+        Sem_init(&cache[i].w, 0, 1);
+    }
+}
+
+CACHE* cache_find(URL* url)
+{
+    CACHE* target = NULL;
+    for (int i = 0; i < MAX_OBJECT_CNT; i++)
+    {
+        P(&cache[i].mutex);
+        ++cache[i].read_cnt;
+        if (cache[i].read_cnt == 1) P(&cache[i].w);
+        V(&cache[i].mutex);
+        
+        if (!cache[i].empty)
+        if (URL_is_equal(url, &cache[i]))
+        target = &cache[i];
+        
+        P(&cache[i].mutex);
+        --cache[i].read_cnt;
+        if (cache[i].read_cnt == 0) V(&cache[i].w);
+        V(&cache[i].mutex);
+        
+        // 返回找到的cache，同时更新时间
+        if (target)
+        {
+            P(&target->mutex);
+            target->last_visit_time = ++current_time;
+            V(&target->mutex);
+            return target;
+        }
+    }
+    return NULL;
+}
+
+CACHE* cache_fill(CACHE* target, URL* url, char *data)
+{
+    P(&target->w);
+    target->empty = 0;
+    URL_copy(&target->url, url);
+    strcpy(target->data, data);
+    V(&target->w);
+    
+    P(&target->mutex);
+    target->last_visit_time = ++current_time;
+    V(&target->mutex);
+}
+
+void cache_load(URL* url, char* data)
+{
+    CACHE* target = NULL;
+    // 判断是否有空位放入缓存
+    for (int i = 0; i < MAX_OBJECT_CNT; i++)
+    {
+        P(&cache[i].mutex);
+        ++cache[i].read_cnt;
+        if (cache[i].read_cnt == 1) P(&cache[i].w);
+        V(&cache[i].mutex);
+        
+        if (cache[i].empty)
+        target = &cache[i];
+        
+        P(&cache[i].mutex);
+        --cache[i].read_cnt;
+        if (cache[i].read_cnt == 0) V(&cache[i].w);
+        V(&cache[i].mutex);
+        
+        if (target != NULL)
+        {
+            cache_fill(target, url, data);
+        }
+    }
+    
+    for (int i = 0; i < MAX_OBJECT_CNT; i++)
+    {
+        P(&cache[i].mutex);
+        ++cache[i].read_cnt;
+        if (cache[i].read_cnt == 1) P(&cache[i].w);
+        V(&cache[i].mutex);
+        
+        if (!cache[i].empty)
+        {
+            if (target == NULL)
+            {
+                target = &cache[i];
+            }
+            else if (cache[i].last_visit_time < target->last_visit_time)
+            {
+                target = &cache[i];
+            }
+        }
+        
+        P(&cache[i].mutex);
+        --cache[i].read_cnt;
+        if (cache[i].read_cnt == 0) V(&cache[i].w);
+        V(&cache[i].mutex);
+    }
+    
+    cache_fill(target, url, data);
+    return;
+}
+
+
 
 void parse_url(char* str, URL* url)
 {
@@ -46,7 +192,7 @@ void parse_url(char* str, URL* url)
     }
     else
     {
-        strcpy(url->port, "43032");
+        strcpy(url->port, "80");
         strncpy(url->host, pt1, pt3-pt1);
     }
     
@@ -93,6 +239,35 @@ void doit(int connfd) {
     URL url;
     char data[MAX_SIZE];
     read_client(&rio, &url, data);
+    
+    // 查找cache
+    CACHE* target = NULL;
+    for (int i = 0; i < MAX_OBJECT_CNT; i++)
+    {
+        P(&cache[i].mutex);
+        ++cache[i].read_cnt;
+        if (cache[i].read_cnt == 1) P(&cache[i].w);
+        V(&cache[i].mutex);
+        
+        if (!cache[i].empty)
+        if (URL_is_equal(&url, &cache[i]))
+        {
+            target = &cache[i];
+            target->last_visit_time = ++current_time; // 更新时间
+            Rio_writen(connfd, target->data, strlen(target->data));
+        }
+        
+        P(&cache[i].mutex);
+        --cache[i].read_cnt;
+        if (cache[i].read_cnt == 0) V(&cache[i].w);
+        V(&cache[i].mutex);
+        
+        
+        if (target)
+        {
+            return;
+        }
+    }
  
     int serverfd = open_clientfd(url.host, url.port);
     if (serverfd < 0) printf("Connection failed!\n");
@@ -100,17 +275,35 @@ void doit(int connfd) {
     rio_readinitb(&rio, serverfd);
     Rio_writen(serverfd, data, strlen(data));
     
-    int len;
+    int len, total_len;
+    char cache_data[MAX_OBJECT_SIZE];
+    char* cache_data_ptr = cache_data;
     while ((len = Rio_readlineb(&rio, line, MAX_SIZE)) > 0)
+    {
         Rio_writen(connfd, line, len);
+        total_len += len;
+        if (total_len < MAX_OBJECT_SIZE)
+        {
+            strcpy(cache_data_ptr, line);
+            cache_data_ptr += len;
+        }
+    }
+    if (total_len < MAX_OBJECT_SIZE)
+    {
+        cache_load(&url, cache_data);
+    }
+    
     
     Close(serverfd);
 }
 
+
+
+/////////////   csapp: sbuf.c   /////////////
+
 #include <pthread.h>
 #include <semaphore.h>
 
-/////////////   csapp: sbuf.c   /////////////
 typedef struct 
 {
     int *buf;
@@ -158,6 +351,11 @@ int sbuf_remove(sbuf_t *sp)
 }
 
 
+
+
+
+
+
 sbuf_t sbuf;
 void solver(void* unknown)
 {
@@ -187,8 +385,8 @@ int main(int argc, char **argv)
     }
     listen_fd = Open_listenfd(argv[1]);
     
-    
     sbuf_init(&sbuf, SBUF_SIZE);
+    cache_init();
     for(int i = 0; i < MAX_THREAD; i++)
     {
         pthread_t trd;
