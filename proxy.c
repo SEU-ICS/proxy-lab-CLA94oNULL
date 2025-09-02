@@ -294,9 +294,9 @@ void doit(int connect_fd)
     {
         cache_read_begin(&cache[i]);
         if (!cache[i].empty)
-        if (URL_is_equal(url, &cache[i].url))
+        if (URL_is_equal(&url, &cache[i].url))
         {
-            Rio_writen(connect_fd, cache[i]->data, strlen(cache[i]->data));
+            Rio_writen(connect_fd, cache[i].data, strlen(cache[i].data));
             cache_read_end(&cache[i]);
             return;
         }
