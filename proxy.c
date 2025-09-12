@@ -5,7 +5,7 @@
 #define MAX_SIZE 8192
 #define SBUF_SIZE 16384
 #define MAX_THREAD 8
-
+//
 /* Recommended max cache and object sizes */
 #define MAX_CACHE_SIZE 1049000
 #define MAX_OBJECT_SIZE 102400
